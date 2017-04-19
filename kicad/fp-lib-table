@@ -1,0 +1,3 @@
+(fp_lib_table
+  (lib (name nodemcu)(type KiCad)(uri /home/swarren/git_wa/skorokithakis-kicad-lib/nodemcu.pretty)(options "")(descr ""))
+)
