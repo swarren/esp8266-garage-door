@@ -46,7 +46,7 @@
 #endif
 
 // Production for main garage on NodeMCU; rev 1 PCB
-#if 1
+#if 0
 #define DEVID "-main"
 #define PIN_BTN 0
 #define DOOR0_NAME "Stephen's Door"
@@ -60,7 +60,6 @@
 #endif
 
 // Production for main garage on NodeMCU; rev 2 PCB
-// Untested so far
 #if 0
 #define DEVID "-main"
 #define PIN_BTN 0
@@ -74,12 +73,14 @@
 #define PIN_ULTRA_ECHO_1 13
 #endif
 
-// Production for third garage on NodeMCU; no PCB yet
-#if 0
+// Production for third garage on NodeMCU; rev 1 PCB (2nd door pins)
+#if 1
 #define DEVID "-third"
 #define PIN_BTN 0
 #define DOOR0_NAME "Third Garage"
-#define PIN_DOOR_0 4
+#define PIN_DOOR_0 14
+#define PIN_ULTRA_TRIG_0 12
+#define PIN_ULTRA_ECHO_0 13
 #endif
 
 #define CLOSED_MIN_ECHO_TIME \
