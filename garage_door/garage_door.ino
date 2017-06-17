@@ -146,8 +146,64 @@ private:
 };
 #endif
 
+enum RelayControllerState {
+  RC_STATE_IDLE,
+  RC_STATE_HIGH_TIMER,
+  RC_STATE_LOW_TIMER,
+};
+
+class RelayController {
+public:
+  RelayController(int pin) :
+    m_pin(pin),
+    m_trig_count(0),
+    m_state(RC_STATE_IDLE),
+    m_state_start(0) {
+  }
+
+  void iter() {
+    switch (m_state) {
+    case RC_STATE_HIGH_TIMER:
+      if ((millis() - m_state_start) < 500)
+        break;
+      m_state = RC_STATE_LOW_TIMER;
+      m_state_start = millis();
+      digitalWrite(m_pin, LOW);
+      break;
+    case RC_STATE_LOW_TIMER:
+      if ((millis() - m_state_start) < 500)
+        break;
+      m_state = RC_STATE_IDLE;
+      // deliberate fall-through
+    case RC_STATE_IDLE:
+    default:
+      if (!m_trig_count)
+        break;
+      m_trig_count--;
+      m_state = RC_STATE_HIGH_TIMER;
+      m_state_start = millis();
+      digitalWrite(m_pin, HIGH);
+      break;
+    }
+  }
+
+  void trigger() {
+    m_trig_count++;
+  }
+
+private:
+  int m_pin;
+  int m_trig_count;
+  enum RelayControllerState m_state;
+  unsigned long m_state_start;
+};
+
 static String ssid;
 static String wifipw;
+RelayController relay0(PIN_DOOR_0);
+#ifdef PIN_DOOR_1
+RelayController relay1(PIN_DOOR_1);
+#endif
 #ifdef PIN_ULTRA_TRIG_0
 static UltraEcho ultra_echo_0(PIN_ULTRA_ECHO_0);
 #endif
@@ -364,14 +420,12 @@ void handle_http_configured_post_root() {
   web_server.sendHeader("Location", "/");
   web_server.send(302, "text/plain", "");
 
-#ifdef DOOR1_NAME
-  int pin = (!door) ? PIN_DOOR_0 : PIN_DOOR_1;
-#else
-  int pin = PIN_DOOR_0;
+  RelayController *relay = &relay0;
+#ifdef PIN_DOOR_1
+  if (door)
+    relay = &relay1;
 #endif
-  digitalWrite(pin, HIGH);
-  delay(500);
-  digitalWrite(pin, LOW);
+  relay->trigger();
 }
 
 void setup() {
@@ -478,6 +532,11 @@ void loop() {
     if (!digitalRead(PIN_BTN))
       btn_pressed_time = millis();
   }
+
+  relay0.iter();
+#ifdef PIN_DOOR_1
+  relay1.iter();
+#endif
 
 #if defined(PIN_ULTRA_TRIG_0) || defined(PIN_ULTRA_TRIG_1)
   static bool ultra_trigger_active;
