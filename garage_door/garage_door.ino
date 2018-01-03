@@ -105,6 +105,15 @@ public:
     return __builtin_popcount(m_closed_hist & 0xff) >= 6;
   }
 
+  String history_string(void) {
+    int hist_bits = sizeof(m_closed_hist) * 8;
+    char s[hist_bits + 1];
+    for (int i = 0; i < hist_bits; i++)
+      s[i] = (m_closed_hist & (1ULL << (hist_bits - i - 1))) ? '*' : '-';
+    s[hist_bits] = 0;
+    return s;
+  }
+
   void isr_echo(void) {
     unsigned long t = micros();
     int val = digitalRead(m_pin);
@@ -366,6 +375,7 @@ const char html_configured_sta_get_root[] = { "\
 </form>"
 #ifdef PIN_ULTRA_TRIG_0
 "State: STATE0<br/>"
+"History: HIST0<br/>"
 #endif
 "<hr/>"
 #endif
@@ -376,6 +386,7 @@ const char html_configured_sta_get_root[] = { "\
 </form>"
 #ifdef PIN_ULTRA_TRIG_1
 "State: STATE1<br/>"
+"History: HIST1<br/>"
 #endif
 "<hr/>"
 #endif
@@ -388,9 +399,11 @@ void handle_http_configured_get_root() {
   String s(html_configured_sta_get_root);
 #ifdef PIN_ULTRA_TRIG_0
   s.replace("STATE0", ultra_echo_0.is_closed() ? "CLOSED" : "OPEN  ");
+  s.replace("HIST0", ultra_echo_0.history_string());
 #endif
 #ifdef PIN_ULTRA_TRIG_1
   s.replace("STATE1", ultra_echo_1.is_closed() ? "CLOSED" : "OPEN  ");
+  s.replace("HIST1", ultra_echo_1.history_string());
 #endif
   web_server.send(200, "text/html", s);
 }
