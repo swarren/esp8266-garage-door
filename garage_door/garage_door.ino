@@ -30,7 +30,7 @@
 #include "ESPAsyncTCP.h"
 
 // Development on Adafruit Huzzah
-#if 0
+#if 1
 #define DEVID "-dev"
 #define PIN_BTN 0
 #if 1
@@ -76,7 +76,7 @@
 #endif
 
 // Production for third garage on NodeMCU; rev 1 PCB (2nd door pins)
-#if 1
+#if 0
 #define DEVID "-third"
 #define PIN_BTN 0
 #define DOOR0_NAME "Third Garage"
@@ -96,8 +96,8 @@ class UltraEcho {
 public:
   UltraEcho(int pin) :
     m_pin(pin),
-    m_wait_for_echo_start(true),
-    m_prev_closed(true) {
+    m_wait_for_echo_start(true)
+  {
   }
 
   void pre_trigger(void) {
@@ -117,7 +117,7 @@ public:
     return s;
   }
 
-  void isr_echo(void (*closed_change_callback)(bool closed)) {
+  void isr_echo() {
     unsigned long t = micros();
     int val = digitalRead(m_pin);
 #if DEBUG_ULTRA
@@ -143,15 +143,6 @@ public:
 #endif
       m_closed_hist <<= 1;
       m_closed_hist |= !!closed;
-      bool new_closed = is_closed();
-      if (new_closed != m_prev_closed) {
-#if DEBUG_ULTRA
-        Serial.printf("Closed changed\n");
-#endif
-        if (closed_change_callback)
-          closed_change_callback(new_closed);
-        m_prev_closed = new_closed;
-      }
 #if DEBUG_ULTRA
       Serial.printf("Closed hist: 0x%x ?%d\n", m_closed_hist, !!is_closed());
 #endif
@@ -161,7 +152,6 @@ public:
 private:
   int m_pin;
   bool m_wait_for_echo_start;
-  bool m_prev_closed;
   unsigned long m_ts_echo_start;
   unsigned long m_echo_time;
   unsigned int m_closed_hist;
@@ -220,7 +210,7 @@ private:
   unsigned long m_state_start;
 };
 
-#define DEBUG_SMTP 0
+#define DEBUG_SMTP 1
 
 enum SMTPClientState {
   SMTP_STATE_IDLE,
@@ -283,25 +273,13 @@ public:
     m_state(SMTP_STATE_IDLE),
     m_data_door_name(NULL),
     m_data_closed(false),
-    m_client(),
+    m_client(NULL),
     m_ibuf()
   {
-    m_client.onTimeout(
-      [](void *obj, AsyncClient* c, uint32_t time) {
-        ((SMTPClient *)(obj))->on_timeout();
-      }, this);
-    m_client.onConnect(
-      [](void *obj, AsyncClient* c) {
-        ((SMTPClient *)(obj))->on_connect();
-      }, this);
-    m_client.onDisconnect(
-      [](void *obj, AsyncClient* c) {
-        ((SMTPClient *)(obj))->on_disconnect();
-      }, this);
-    m_client.onData(
-      [](void *obj, AsyncClient* c, void *data, size_t len) {
-        ((SMTPClient *)(obj))->on_data(data, len);
-      }, this);
+  }
+
+  bool is_busy() {
+    return m_state != SMTP_STATE_IDLE;
   }
 
   bool start_email(const char *door_name, bool closed) {
@@ -317,7 +295,14 @@ public:
     m_data_door_name = door_name;
     m_data_closed = closed;
     m_ibuf.clear();
-    bool in_progress = m_client.connect("192.168.63.2", 25);
+
+    m_client = new AsyncClient();
+    m_client->onTimeout(_on_timeout, this);
+    m_client->onConnect(_on_connect, this);
+    m_client->onDisconnect(_on_disconnect, this);
+    m_client->onData(_on_data, this);
+
+    bool in_progress = m_client->connect("192.168.63.2", 25);
     if (!in_progress) {
 #if DEBUG_SMTP
       Serial.printf("SMTP skip start due to connect() failed\n");
@@ -329,15 +314,24 @@ public:
   }
 
   void iter(void) {
-    if (m_state == SMTP_STATE_IDLE)
+    unsigned long timeout;
+    switch (m_state) {
+    case SMTP_STATE_IDLE:
       return;
+    case SMTP_STATE_WAIT_SIGNON:
+      timeout = 10000;
+      break;
+    default:
+      timeout = 2000;
+      break;
+    }
 
     unsigned long t = millis();
-    if ((t - m_state_time) < 1000)
+    if ((t - m_state_time) < timeout)
       return;
 
 #if DEBUG_SMTP
-    Serial.printf("SMTP (%d) iter timeout\n", m_state);
+    Serial.printf("SMTP (%d) iter timeout (s:%lu +%lu t:%lu)\n", m_state, m_state_time, timeout, t);
 #endif
     close_connection();
   }
@@ -347,8 +341,25 @@ private:
   unsigned long m_state_time;
   const char *m_data_door_name;
   bool m_data_closed;
-  AsyncClient m_client;
+  AsyncClient *m_client;
   LineBuf m_ibuf;
+
+  static void _on_timeout(void *obj, AsyncClient* c, uint32_t time) {
+    SMTPClient *scl = (SMTPClient *)obj;
+    scl->on_timeout();
+  }
+  static void _on_connect(void *obj, AsyncClient* c) {
+    SMTPClient *scl = (SMTPClient *)obj;
+    scl->on_connect();
+  }
+  static void _on_disconnect(void *obj, AsyncClient* c) {
+    SMTPClient *scl = (SMTPClient *)obj;
+    scl->on_disconnect();
+  }
+  static void _on_data(void *obj, AsyncClient* c, void *data, size_t len) {
+    SMTPClient *scl = (SMTPClient *)obj;
+    scl->on_data(data, len);
+  }
 
   void set_state(SMTPClientState new_state) {
 #if DEBUG_SMTP
@@ -367,26 +378,29 @@ private:
     default:
       break;
     }
-    m_client.close();
+    m_client->close();
     set_state(SMTP_STATE_WAIT_CLOSED);
   }
 
   void on_timeout() {
 #if DEBUG_SMTP
-    Serial.printf("SMTP (%d) timeout\n", m_state);
+    Serial.printf("SMTP (%d) on_timeout()\n", m_state);
 #endif
     close_connection();
   }
 
   void on_connect() {
 #if DEBUG_SMTP
-    Serial.printf("SMTP (%d) connected\n", m_state);
+    Serial.printf("SMTP (%d) on_connected()\n", m_state);
 #endif
     switch (m_state) {
     case SMTP_STATE_WAIT_CONNECT:
       set_state(SMTP_STATE_WAIT_SIGNON);
       break;
     default:
+#if DEBUG_SMTP
+      Serial.printf("SMTP on_connect(): disconnect due to bad state\n");
+#endif
       close_connection();
       break;
     }
@@ -394,67 +408,88 @@ private:
 
   void on_disconnect() {
 #if DEBUG_SMTP
-    Serial.printf("SMTP (%d) disconnected\n", m_state);
+    Serial.printf("SMTP (%d) on_disconnect()\n", m_state);
 #endif
+    m_client->abort();
+    delete m_client;
+    m_client = NULL;
     set_state(SMTP_STATE_IDLE);
   }
 
   void on_data(void *data, size_t len) {
 #if DEBUG_SMTP
-    Serial.printf("SMTP (%d) data RX (%d)\n", m_state, len);
+    Serial.printf("SMTP (%d) on_data() RX (%d)\n", m_state, len);
 #endif
     while (len) {
       size_t consumed = m_ibuf.append(data, len);
       if (!consumed) {
+#if DEBUG_SMTP
+        Serial.printf("SMTP on_data(): disconnect due to !consumed\n");
+#endif
         close_connection();
         return;
       }
       data += consumed;
       len -= consumed;
-      switch (m_state) {
-      case SMTP_STATE_WAIT_SIGNON:
-        on_data_wait_signon();
-        break;
-      case SMTP_STATE_WAIT_FEATURES:
-        on_data_wait_features();
-        break;
-      case SMTP_STATE_WAIT_MAIL_FROM_OK:
-        on_data_wait_mail_from_ok();
-        break;
-      case SMTP_STATE_WAIT_RCPT_TO_OK:
-        on_data_wait_rcpt_to_ok();
-        break;
-      case SMTP_STATE_WAIT_DATA_RESPONSE:
-        on_data_wait_data_reponse();
-        break;
-      case SMTP_STATE_WAIT_END_DATA_RESPONSE:
-        on_data_wait_end_data_response();
-        break;
-      case SMTP_STATE_WAIT_QUIT_RESPONSE:
-        on_data_wait_quit_response();
-        break;
-      default:
-        close_connection();
-        break;
-      }
+      do {
+        size_t token;
+        char *line = m_ibuf.get_line(&token);
+        if (!line)
+          break;
+        switch (m_state) {
+        case SMTP_STATE_WAIT_SIGNON:
+          on_data_wait_signon(line);
+          break;
+        case SMTP_STATE_WAIT_FEATURES:
+          on_data_wait_features(line);
+          break;
+        case SMTP_STATE_WAIT_MAIL_FROM_OK:
+          on_data_wait_mail_from_ok(line);
+          break;
+        case SMTP_STATE_WAIT_RCPT_TO_OK:
+          on_data_wait_rcpt_to_ok(line);
+          break;
+        case SMTP_STATE_WAIT_DATA_RESPONSE:
+          on_data_wait_data_reponse(line);
+          break;
+        case SMTP_STATE_WAIT_END_DATA_RESPONSE:
+          on_data_wait_end_data_response(line);
+          break;
+        case SMTP_STATE_WAIT_QUIT_RESPONSE:
+          on_data_wait_quit_response(line);
+          break;
+        default:
+#if DEBUG_SMTP
+          Serial.printf("SMTP on_data(): disconnect due to bad state\n");
+#endif
+          close_connection();
+          break;
+        }
+        m_ibuf.consume_line(token);
+      } while (true);
     }
   }
 
   void send(const char *line) {
 #if DEBUG_SMTP
     Serial.printf("SMTP >> %s", line);
+    /*
+     * This should never happen, since SMTP is a synchronous protocol, and the
+     * far-end TCP stack should ACK whatever we last sent as part of sending
+     * its response.
+     */
+    if (!m_client->canSend())
+        Serial.print("ERROR: SMTP SEND WHEN !canSend()\n");
 #endif
-    m_client.write(line);
+    m_client->write(line);
   }
 
-  void on_data_wait_signon() {
-    size_t token;
-    char *line = m_ibuf.get_line(&token);
-    if (!line)
-      return;
+  void on_data_wait_signon(char *line) {
     bool ok = !strncmp(line, "220 ", 4);
-    m_ibuf.consume_line(token);
     if (!ok) {
+#if DEBUG_SMTP
+      Serial.printf("SMTP on_data_wait_signon(): disconnect due to !ok\n");
+#endif
       close_connection();
       return;
     }
@@ -462,34 +497,28 @@ private:
     set_state(SMTP_STATE_WAIT_FEATURES);
   }
 
-  void on_data_wait_features() {
-    do {
-      size_t token;
-      char *line = m_ibuf.get_line(&token);
-      if (!line)
-        return;
-      bool cont = !strncmp(line, "250-", 4);
-      bool last = !strncmp(line, "250 ", 4);
-      m_ibuf.consume_line(token);
-      if (!cont && !last) {
-        close_connection();
-        return;
-      }
-      if (last)
-        break;
-    } while (true);
+  void on_data_wait_features(char *line) {
+    bool cont = !strncmp(line, "250-", 4);
+    bool last = !strncmp(line, "250 ", 4);
+    if (!cont && !last) {
+#if DEBUG_SMTP
+      Serial.printf("SMTP on_data_wait_features(): disconnect due to !cont && !last\n");
+#endif
+      close_connection();
+      return;
+    }
+    if (!last)
+      return;
     send("MAIL FROM: <garage-door" DEVID "@wwwdotorg.org>\r\n");
     set_state(SMTP_STATE_WAIT_MAIL_FROM_OK);
   }
 
-  void on_data_wait_mail_from_ok() {
-    size_t token;
-    char *line = m_ibuf.get_line(&token);
-    if (!line)
-      return;
+  void on_data_wait_mail_from_ok(char *line) {
     bool ok = !strncmp(line, "250 ", 4);
-    m_ibuf.consume_line(token);
     if (!ok) {
+#if DEBUG_SMTP
+      Serial.printf("SMTP on_data_wait_mail_from_ok(): disconnect due to !ok\n");
+#endif
       close_connection();
       return;
     }
@@ -497,14 +526,12 @@ private:
     set_state(SMTP_STATE_WAIT_RCPT_TO_OK);
   }
 
-  void on_data_wait_rcpt_to_ok() {
-    size_t token;
-    char *line = m_ibuf.get_line(&token);
-    if (!line)
-      return;
+  void on_data_wait_rcpt_to_ok(char *line) {
     bool ok = !strncmp(line, "250 ", 4);
-    m_ibuf.consume_line(token);
     if (!ok) {
+#if DEBUG_SMTP
+      Serial.printf("SMTP on_data_wait_rcpt_to_ok(): disconnect due to !ok\n");
+#endif
       close_connection();
       return;
     }
@@ -512,19 +539,17 @@ private:
     set_state(SMTP_STATE_WAIT_DATA_RESPONSE);
   }
 
-  void on_data_wait_data_reponse() {
-    size_t token;
-    char *line = m_ibuf.get_line(&token);
-    if (!line)
-      return;
+  void on_data_wait_data_reponse(char *line) {
     bool ok = !strncmp(line, "354 ", 4);
-    m_ibuf.consume_line(token);
     if (!ok) {
+#if DEBUG_SMTP
+      Serial.printf("SMTP on_data_wait_data_reponse(): disconnect due to !ok\n");
+#endif
       close_connection();
       return;
     }
-    char msg[128];
-    sprintf(msg,
+    char msg[256];
+    snprintf(msg, sizeof(msg),
       "From: <garage-door" DEVID "@wwwdotorg.org>\r\n"
       "To: <s-garage-door" DEVID "@wwwdotorg.org>\r\n"
       "Subject: %s now %s.\r\n"
@@ -534,14 +559,12 @@ private:
     set_state(SMTP_STATE_WAIT_END_DATA_RESPONSE);
   }
 
-  void on_data_wait_end_data_response() {
-    size_t token;
-    char *line = m_ibuf.get_line(&token);
-    if (!line)
-      return;
+  void on_data_wait_end_data_response(char *line) {
     bool ok = !strncmp(line, "250 ", 4);
-    m_ibuf.consume_line(token);
     if (!ok) {
+#if DEBUG_SMTP
+      Serial.printf("SMTP on_data_wait_end_data_response(): disconnect due to !ok\n");
+#endif
       close_connection();
       return;
     }
@@ -549,17 +572,18 @@ private:
     set_state(SMTP_STATE_WAIT_QUIT_RESPONSE);
   }
 
-  void on_data_wait_quit_response() {
-    size_t token;
-    char *line = m_ibuf.get_line(&token);
-    if (!line)
-      return;
-    bool ok = !strncmp(line, "250 ", 4);
-    m_ibuf.consume_line(token);
+  void on_data_wait_quit_response(char *line) {
+    bool ok = !strncmp(line, "221 ", 4);
     if (!ok) {
+#if DEBUG_SMTP
+      Serial.printf("SMTP on_data_wait_quit_response(): disconnect due to !ok\n");
+#endif
       close_connection();
       return;
     }
+#if DEBUG_SMTP
+    Serial.printf("SMTP on_data_wait_quit_response(): disconnect due to quit response\n");
+#endif
     close_connection();
   }
 };
@@ -577,32 +601,29 @@ public:
   }
 
   void add(const char *door_name, bool closed) {
-    noInterrupts();
     if (m_num_entries == QLEN)
-      goto out;
+      return;
     m_entries[m_num_entries].door_name = door_name;
     m_entries[m_num_entries].closed = closed;
     m_num_entries++;
-out:
-    interrupts();
   }
 
   void iter() {
     if (!m_num_entries)
       return;
+    if (smtp_client.is_busy())
+        return;
     bool started = smtp_client.start_email(m_entries[0].door_name,
       m_entries[0].closed);
     if (!started)
       return;
-    noInterrupts();
     m_num_entries--;
     memcpy(m_entries, &m_entries[1], m_num_entries * sizeof(m_entries[0]));
-    interrupts();
   }
 
 private:
   struct SMTPQueueEntry m_entries[QLEN];
-  volatile int m_num_entries;
+  int m_num_entries;
 };
 SMTPQueue<4> smtp_queue;
 
@@ -623,17 +644,13 @@ static ESP8266HTTPUpdateServer http_updater;
 
 #ifdef PIN_ULTRA_TRIG_0
 void isr_ultra_echo_0() {
-  ultra_echo_0.isr_echo([](bool new_closed) {
-    smtp_queue.add(DOOR0_NAME, new_closed);
-  });
+  ultra_echo_0.isr_echo();
 }
 #endif
 
 #ifdef PIN_ULTRA_TRIG_1
 void isr_ultra_echo_1() {
-  ultra_echo_1.isr_echo([](bool new_closed) {
-    smtp_queue.add(DOOR1_NAME, new_closed);
-  });
+  ultra_echo_1.isr_echo();
 }
 #endif
 
@@ -844,6 +861,10 @@ void handle_http_configured_post_root() {
   relay->trigger();
 }
 
+void handle_http_configured_get_reset() {
+  ESP.restart();
+}
+
 void setup() {
   Serial.begin(115200);
   delay(250);
@@ -888,6 +909,7 @@ void setup() {
   if (ssid.length() && wifipw.length()) {
     web_server.on("/", HTTP_GET, handle_http_configured_get_root);
     web_server.on("/", HTTP_POST, handle_http_configured_post_root);
+    web_server.on("/reset", HTTP_GET, handle_http_configured_get_reset);
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid.c_str(), wifipw.c_str());
     WiFi.setAutoConnect(true);
@@ -949,8 +971,38 @@ void loop() {
       btn_pressed_time = millis();
   }
 
-  smtp_client.iter();
-  smtp_queue.iter();
+#if DEBUG_SMTP
+  if (Serial.read() == 'e') {
+    Serial.printf("Sending 2 test emails\n");
+    smtp_queue.add("EmailTest1", false);
+    smtp_queue.add("EmailTest2", false);
+  }
+#endif
+
+#ifdef PIN_ULTRA_TRIG_0
+  {
+    static bool door0_last_closed = true;
+    bool door0_closed = ultra_echo_0.is_closed();
+    if (door0_closed != door0_last_closed) {
+      door0_last_closed = door0_closed;
+      smtp_queue.add(DOOR0_NAME, door0_closed);
+    }
+  }
+#endif
+#ifdef PIN_ULTRA_TRIG_1
+  {
+    static bool door1_last_closed = true;
+    bool door1_closed = ultra_echo_1.is_closed();
+    if (door1_closed != door1_last_closed) {
+      door1_last_closed = door1_closed;
+      smtp_queue.add(DOOR1_NAME, door1_closed);
+    }
+  }
+#endif
+  if (new_sta_connected) {
+    smtp_client.iter();
+    smtp_queue.iter();
+  }
   relay0.iter();
 #ifdef PIN_DOOR_1
   relay1.iter();
