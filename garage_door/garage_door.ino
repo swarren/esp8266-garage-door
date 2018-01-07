@@ -83,11 +83,16 @@
 #define PIN_DOOR_0 14
 #define PIN_ULTRA_TRIG_0 12
 #define PIN_ULTRA_ECHO_0 13
+#define SHORT_ECHO
 #endif
 
+#ifdef SHORT_ECHO
+#define CLOSED_MIN_ECHO_TIME 500 /* us */
+#else
 #define CLOSED_MIN_ECHO_TIME \
   (1000000 /* s->us */ * 2 /* there and back */ * 0.3 /* meters */ / \
     343 /* sound_speed_meters_per_sec */)
+#endif
 
 #if defined(PIN_ULTRA_TRIG_0) || defined(PIN_ULTRA_TRIG_1)
 #define DEBUG_ULTRA 0
